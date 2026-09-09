@@ -24,14 +24,20 @@ const register = async (req, res) => {
 
     // The users table uses id, name, password, role and status columns.
     // Department is collected by the form but is not part of that table.
+    // Employee → Active immediately. IT Manager → Pending until Admin approves.
+    const requestedRole = (role === 'IT Manager') ? 'IT Manager' : 'Employee'
+    const initialStatus  = (requestedRole === 'IT Manager') ? 'Pending' : 'Active'
+
     const [result] = await pool.query(
       `INSERT INTO users (name, email, password, phone, role, status)
-       VALUES (?, ?, ?, ?, ?, 'Active')`,
-      [name, email, password_hash, phone || null, role || 'Employee']
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, email, password_hash, phone || null, requestedRole, initialStatus]
     )
 
     res.status(201).json({
-      message: 'Account created successfully! Please log in.',
+      message: requestedRole === 'IT Manager'
+        ? 'IT Manager account submitted. Awaiting Admin approval.'
+        : 'Account created successfully! Please log in.',
       userId: result.insertId
     })
   } catch (err) {
@@ -59,6 +65,10 @@ const login = async (req, res) => {
     }
 
     const user = rows[0]
+
+    if (String(user.status).toLowerCase() === 'pending') {
+      return res.status(403).json({ error: 'Your IT Manager account is awaiting Admin approval. Please contact the System Admin.' })
+    }
 
     if (String(user.status).toLowerCase() !== 'active') {
       return res.status(403).json({ error: 'Your account has been suspended. Contact an admin.' })

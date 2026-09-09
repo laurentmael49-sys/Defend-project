@@ -1,8 +1,8 @@
 export default function Footer() {
   return (
-    <footer className="bg-gray-100 text-gray-600 py-4 mt-8">
-      <div className="max-w-6xl mx-auto text-center text-sm">
-        © 2026 Defend Inventory System
+    <footer className="bg-white border-t border-emerald-100 text-slate-500 py-6 font-sans">
+      <div className="max-w-7xl mx-auto text-center text-xs font-semibold">
+        © 2026 Asset Manager. All rights reserved.
       </div>
     </footer>
   );

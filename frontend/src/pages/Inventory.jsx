@@ -10,7 +10,6 @@ const Inventory = () => {
   const [loading, setLoading] = useState(true)
 
   // Modals
-  const [showQRScanner, setShowQRScanner] = useState(false)
   const [requestModal, setRequestModal] = useState({ show: false, asset: null })
   const [addModal, setAddModal] = useState(false)
   const [editModal, setEditModal] = useState({ show: false, asset: null })
@@ -21,9 +20,16 @@ const Inventory = () => {
   const [reqLoading, setReqLoading] = useState(false)
 
   // Add/Edit Form (IT Manager)
-  const blankAsset = { name: '', category: 'Computer', status: 'available', price: '', image_url: '' }
+  const blankAsset = { name: '', category: 'Computer', status: 'available', price: '' }
   const [assetForm, setAssetForm] = useState(blankAsset)
   const [formLoading, setFormLoading] = useState(false)
+
+  // Toast notification
+  const [toast, setToast] = useState(null)
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 5000)
+  }
 
   const loadAssets = async () => {
     setLoading(true)
@@ -39,8 +45,6 @@ const Inventory = () => {
 
   useEffect(() => { loadAssets() }, [])
 
-  const isLowStock = (a) => a.status === 'maintenance'
-  const lowStockCount = assets.filter(a => a.status === 'maintenance').length
   const onLoanCount = assets.filter(a => a.status === 'loaned').length
   const maintenanceCount = assets.filter(a => a.status === 'maintenance').length
 
@@ -64,11 +68,12 @@ const Inventory = () => {
       if (res.ok) {
         setRequestModal({ show: false, asset: null })
         setReqForm({ start_date: '', end_date: '', reason: '' })
-        alert('Request submitted! Track it on your Dashboard.')
+        showToast('Request submitted successfully! Track it on your Dashboard.')
       } else {
-        alert('Failed to submit request.')
+        const data = await res.json().catch(() => ({}))
+        showToast(data.error || 'Failed to submit request.', 'error')
       }
-    } catch { alert('Network error.') }
+    } catch { showToast('Network error.', 'error') }
     finally { setReqLoading(false) }
   }
 
@@ -86,8 +91,12 @@ const Inventory = () => {
         setAddModal(false)
         setAssetForm(blankAsset)
         await loadAssets()
-      } else { alert('Failed to add asset.') }
-    } catch { alert('Network error.') }
+        showToast(`Asset "${assetForm.name}" added to inventory successfully!`)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        showToast(data.error || 'Failed to add asset.', 'error')
+      }
+    } catch { showToast('Network error.', 'error') }
     finally { setFormLoading(false) }
   }
 
@@ -104,8 +113,12 @@ const Inventory = () => {
       if (res.ok) {
         setEditModal({ show: false, asset: null })
         await loadAssets()
-      } else { alert('Failed to update asset.') }
-    } catch { alert('Network error.') }
+        showToast(`Asset updated successfully!`)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        showToast(data.error || 'Failed to update asset.', 'error')
+      }
+    } catch { showToast('Network error.', 'error') }
     finally { setFormLoading(false) }
   }
 
@@ -113,65 +126,89 @@ const Inventory = () => {
   const deleteAsset = async (id) => {
     try {
       const res = await fetch(`http://localhost:5000/api/assets/${id}`, { method: 'DELETE' })
-      if (res.ok) { setDeleteConfirm(null); await loadAssets() }
-      else alert('Failed to delete asset.')
-    } catch { alert('Network error.') }
+      if (res.ok) { 
+        setDeleteConfirm(null)
+        await loadAssets()
+        showToast('Asset deleted from inventory.')
+      } else {
+        const data = await res.json().catch(() => ({}))
+        showToast(data.error || 'Failed to delete asset.', 'error')
+      }
+    } catch { showToast('Network error.', 'error') }
   }
 
   const openEdit = (asset) => {
-    setAssetForm({ name: asset.name, category: asset.category, status: asset.status, price: asset.price, image_url: asset.image_url || '' })
+    setAssetForm({ name: asset.name, category: asset.category, status: asset.status, price: asset.price })
     setEditModal({ show: true, asset })
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 px-4 py-8 text-slate-800 sm:px-6 lg:px-8 font-sans">
-      <div className="mx-auto max-w-7xl">
+    <div className="min-h-screen bg-emerald-50/30 px-4 py-8 text-slate-800 sm:px-6 lg:px-8 font-sans">
+      {/* ── Toast Notification ────────────────────────────────────────── */}
+      {toast && (
+        <div
+          className="fixed top-6 right-6 z-[200] max-w-sm w-full shadow-2xl rounded-2xl overflow-hidden pointer-events-auto bg-slate-900 border border-slate-800 text-white"
+          style={{ animation: 'slideInRight 0.4s cubic-bezier(0.16,1,0.3,1)' }}
+        >
+          <div className="flex items-start gap-3 px-5 py-4">
+            <div className="w-6 h-6 rounded-full bg-emerald-600 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+              {toast.type === 'error' ? '!' : '✓'}
+            </div>
+            <div className="flex-1">
+              <p className="text-xs font-extrabold uppercase tracking-wider text-emerald-400">
+                {toast.type === 'error' ? 'Notice' : 'Success'}
+              </p>
+              <p className="text-xs text-slate-300 font-medium mt-0.5 leading-relaxed">{toast.msg}</p>
+            </div>
+            <button onClick={() => setToast(null)} className="text-slate-400 hover:text-white text-base leading-none">✕</button>
+          </div>
+        </div>
+      )}
+
+      <div className="mx-auto max-w-7xl pt-16">
 
         {/* Header */}
         <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Inventory</h1>
-            <p className="mt-1 text-slate-500 font-medium">
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight">Inventory</h1>
+            <p className="mt-1 text-sm font-medium text-slate-500">
               {user?.role === 'Employee' ? 'Browse available assets and submit a request.' : 'Manage all company assets in one place.'}
             </p>
           </div>
           {user?.role !== 'Employee' && (
             <div className="flex gap-3">
-              <button onClick={() => setShowQRScanner(true)} className="rounded-xl bg-white border border-slate-200 px-5 py-3 font-bold text-slate-700 hover:bg-slate-50 shadow-sm flex items-center gap-2 transition">
-                <span className="text-xl">📷</span> Scan QR
-              </button>
               <button onClick={() => { setAssetForm(blankAsset); setAddModal(true) }}
-                className="rounded-xl bg-slate-900 px-5 py-3 font-bold text-white hover:bg-slate-800 shadow-lg shadow-slate-900/20 flex items-center gap-2 transition">
+                className="rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-3 text-sm font-bold text-white hover:from-emerald-700 hover:to-teal-700 shadow-lg shadow-emerald-600/25 flex items-center gap-2 transition-all">
                 + Add Asset
               </button>
             </div>
           )}
         </div>
 
-        {/* Stock Alerts (IT Manager/Admin only) */}
+        {/* Metrics Bar */}
         {user?.role !== 'Employee' && (
           <div className="mb-8 grid gap-4 sm:grid-cols-4">
-            <AlertCard label="Available" value={assets.filter(a => a.status === 'available').length} color="green" icon="✅" />
-            <AlertCard label="On Loan" value={onLoanCount} color="blue" icon="📦" />
-            <AlertCard label="Maintenance" value={maintenanceCount} color="orange" icon="🔧" />
-            <AlertCard label="Total Assets" value={assets.length} color="slate" icon="🗄️" />
+            <AlertCard label="Available" value={assets.filter(a => a.status === 'available').length} />
+            <AlertCard label="On Loan" value={onLoanCount} />
+            <AlertCard label="Maintenance" value={maintenanceCount} />
+            <AlertCard label="Total Assets" value={assets.length} />
           </div>
         )}
 
         {/* Filters */}
-        <div className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-6 rounded-3xl border border-emerald-100 bg-white/90 p-5 shadow-lg shadow-emerald-950/5">
           <div className="grid gap-4 md:grid-cols-3">
             <input type="text" placeholder="Search by name or ID..."
-              className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:border-slate-400 focus:bg-white transition"
+              className="rounded-2xl border border-emerald-100 bg-emerald-50/30 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30 transition placeholder:text-slate-400"
               value={search} onChange={(e) => setSearch(e.target.value)} />
-            <select className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:border-slate-400 focus:bg-white transition appearance-none"
+            <select className="rounded-2xl border border-emerald-100 bg-emerald-50/30 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30 transition"
               value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="">All Statuses</option>
               <option value="available">Available</option>
               <option value="loaned">On Loan</option>
               <option value="maintenance">Maintenance</option>
             </select>
-            <select className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:border-slate-400 focus:bg-white transition appearance-none"
+            <select className="rounded-2xl border border-emerald-100 bg-emerald-50/30 px-4 py-3 text-sm font-medium text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30 transition"
               value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
               <option value="">All Categories</option>
               <option value="Computer">Computer</option>
@@ -185,16 +222,15 @@ const Inventory = () => {
         </div>
 
         {/* Table */}
-        <div className="rounded-3xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div className="rounded-3xl border border-emerald-100 bg-white/90 shadow-lg shadow-emerald-950/5 overflow-hidden">
           {loading ? (
-            <div className="flex justify-center py-20"><div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div></div>
+            <div className="flex justify-center py-20"><div className="w-8 h-8 border-4 border-emerald-100 border-t-emerald-600 rounded-full animate-spin"></div></div>
           ) : (
             <div className="overflow-x-auto p-2">
               <table className="w-full text-left border-collapse min-w-[800px]">
                 <thead>
-                  <tr className="text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-200">
+                  <tr className="text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-emerald-50 bg-emerald-50/20">
                     <th className="px-5 py-4">ID</th>
-                    <th className="px-5 py-4 text-center">Type</th>
                     <th className="px-5 py-4">Name</th>
                     <th className="px-5 py-4">Category</th>
                     <th className="px-5 py-4">Status</th>
@@ -202,26 +238,19 @@ const Inventory = () => {
                     <th className="px-5 py-4 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="text-sm">
+                <tbody className="text-xs">
                   {filtered.length === 0 ? (
-                    <tr><td colSpan={7} className="text-center py-16 text-slate-400 font-medium">No assets found.</td></tr>
+                    <tr><td colSpan={6} className="text-center py-16 text-slate-400 font-medium">No assets found.</td></tr>
                   ) : filtered.map(m => (
-                    <tr key={m.id} className="border-b border-slate-100 hover:bg-slate-50/80 transition">
-                      <td className="px-5 py-4 font-mono text-slate-500 text-xs">#{m.id}</td>
-                      <td className="px-5 py-4 text-center">
-                        <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto">
-                          <span className="text-xl opacity-60">
-                            {m.category === 'Computer' ? '💻' : m.category === 'Phone' ? '📱' : m.category === 'Monitor' ? '🖥️' : '📦'}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 font-bold text-slate-800">{m.name}</td>
-                      <td className="px-5 py-4 text-slate-600">{m.category}</td>
+                    <tr key={m.id} className="border-b border-emerald-50/60 hover:bg-emerald-50/30 transition">
+                      <td className="px-5 py-4 font-mono text-slate-400 font-semibold">#{m.id}</td>
+                      <td className="px-5 py-4 font-bold text-slate-900 text-sm">{m.name}</td>
+                      <td className="px-5 py-4 text-slate-600 font-medium">{m.category}</td>
                       <td className="px-5 py-4">
-                        <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider
-                          ${m.status === 'available' ? 'bg-green-100 text-green-700 border border-green-200' :
-                            m.status === 'loaned' ? 'bg-yellow-100 text-yellow-700 border border-yellow-200' :
-                            'bg-slate-100 text-slate-700 border border-slate-200'}`}>
+                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider
+                          ${m.status === 'available' ? 'bg-emerald-600 text-white' :
+                            m.status === 'loaned' ? 'bg-teal-100 text-teal-800 border border-teal-200' :
+                            'bg-amber-100 text-amber-800 border border-amber-200'}`}>
                           {m.status}
                         </span>
                       </td>
@@ -231,16 +260,16 @@ const Inventory = () => {
                           <button
                             onClick={() => setRequestModal({ show: true, asset: m })}
                             disabled={m.status !== 'available'}
-                            className="rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 px-4 py-2 text-xs font-bold hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed transition">
+                            className="rounded-xl bg-emerald-600 text-white px-4 py-2 text-xs font-bold hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition">
                             Request Item
                           </button>
                         ) : (
                           <div className="flex justify-end gap-2">
-                            <button onClick={() => openEdit(m)} className="rounded-lg p-2 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/50" title="Edit Asset">
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                            <button onClick={() => openEdit(m)} className="rounded-xl p-2 text-emerald-700 hover:bg-emerald-100 transition-colors" title="Edit Asset">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
                             </button>
-                            <button onClick={() => setDeleteConfirm(m)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors focus:outline-none focus:ring-2 focus:ring-rose-500/50" title="Delete Asset">
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            <button onClick={() => setDeleteConfirm(m)} className="rounded-xl p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-600 transition-colors" title="Delete Asset">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                             </button>
                           </div>
                         )}
@@ -257,28 +286,28 @@ const Inventory = () => {
       {/* ── EMPLOYEE: Request Modal ───────────────────────────────── */}
       {requestModal.show && requestModal.asset && (
         <Modal onClose={() => setRequestModal({ show: false, asset: null })} title="Request Equipment">
-          <p className="text-slate-500 mb-5 text-sm">Requesting: <strong className="text-slate-800">{requestModal.asset.name}</strong></p>
+          <p className="text-slate-600 mb-5 text-xs font-medium">Requesting: <strong className="text-slate-900 font-bold">{requestModal.asset.name}</strong></p>
           <form onSubmit={submitRequest} className="space-y-4">
             <div className="flex gap-4">
               <div className="flex-1">
-                <label className="block text-sm font-medium text-slate-700 mb-1">Start Date</label>
-                <input type="date" required className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500"
+                <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">Start Date</label>
+                <input type="date" required className="w-full px-4 py-2.5 bg-emerald-50/30 border border-emerald-100 rounded-2xl text-slate-800 text-xs font-medium outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30"
                   value={reqForm.start_date} onChange={e => setReqForm({ ...reqForm, start_date: e.target.value })} />
               </div>
               <div className="flex-1">
-                <label className="block text-sm font-medium text-slate-700 mb-1">End Date</label>
-                <input type="date" required className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500"
+                <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">End Date</label>
+                <input type="date" required className="w-full px-4 py-2.5 bg-emerald-50/30 border border-emerald-100 rounded-2xl text-slate-800 text-xs font-medium outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30"
                   value={reqForm.end_date} onChange={e => setReqForm({ ...reqForm, end_date: e.target.value })} />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Reason / Project</label>
-              <textarea required rows={3} className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500"
+              <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">Reason / Project</label>
+              <textarea required rows={3} className="w-full px-4 py-2.5 bg-emerald-50/30 border border-emerald-100 rounded-2xl text-slate-800 text-xs font-medium outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30"
                 value={reqForm.reason} onChange={e => setReqForm({ ...reqForm, reason: e.target.value })} />
             </div>
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-              <button type="button" onClick={() => setRequestModal({ show: false, asset: null })} className="px-5 py-2 rounded-lg font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
-              <button type="submit" disabled={reqLoading} className="px-5 py-2 rounded-lg font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
+            <div className="flex justify-end gap-3 pt-4 border-t border-emerald-50">
+              <button type="button" onClick={() => setRequestModal({ show: false, asset: null })} className="px-5 py-2.5 rounded-2xl font-bold text-slate-500 hover:bg-slate-100 text-xs">Cancel</button>
+              <button type="submit" disabled={reqLoading} className="px-5 py-2.5 rounded-2xl font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 text-xs shadow-md shadow-emerald-600/20">
                 {reqLoading ? 'Submitting...' : 'Submit Request'}
               </button>
             </div>
@@ -288,14 +317,14 @@ const Inventory = () => {
 
       {/* ── IT MANAGER: Add Asset Modal ───────────────────────────── */}
       {addModal && (
-        <Modal onClose={() => setAddModal(false)} title="➕ Add New Asset">
+        <Modal onClose={() => setAddModal(false)} title="Add New Asset">
           <AssetForm form={assetForm} setForm={setAssetForm} onSubmit={submitAddAsset} loading={formLoading} onCancel={() => setAddModal(false)} />
         </Modal>
       )}
 
       {/* ── IT MANAGER: Edit Asset Modal ──────────────────────────── */}
       {editModal.show && (
-        <Modal onClose={() => setEditModal({ show: false, asset: null })} title="✏️ Edit Asset">
+        <Modal onClose={() => setEditModal({ show: false, asset: null })} title="Edit Asset">
           <AssetForm form={assetForm} setForm={setAssetForm} onSubmit={submitEditAsset} loading={formLoading} onCancel={() => setEditModal({ show: false, asset: null })} />
         </Modal>
       )}
@@ -303,40 +332,13 @@ const Inventory = () => {
       {/* ── IT MANAGER: Delete Confirm ────────────────────────────── */}
       {deleteConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center">
-            <div className="text-5xl mb-4">⚠️</div>
-            <h2 className="text-xl font-bold text-slate-900 mb-2">Delete Asset?</h2>
-            <p className="text-slate-500 text-sm mb-6">This will permanently remove <strong>{deleteConfirm.name}</strong> from the inventory.</p>
+          <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center border border-emerald-100">
+            <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center mx-auto mb-4 text-xl font-bold">!</div>
+            <h2 className="text-lg font-bold text-slate-900 mb-2">Delete Asset?</h2>
+            <p className="text-slate-500 text-xs mb-6">This will permanently remove <strong>{deleteConfirm.name}</strong> from the inventory.</p>
             <div className="flex gap-3 justify-center">
-              <button onClick={() => setDeleteConfirm(null)} className="px-5 py-2 rounded-lg font-bold text-slate-600 hover:bg-slate-100 transition">Cancel</button>
-              <button onClick={() => deleteAsset(deleteConfirm.id)} className="px-5 py-2 rounded-lg font-bold bg-rose-600 text-white hover:bg-rose-700 transition">Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── QR Scanner Modal ──────────────────────────────────────── */}
-      {showQRScanner && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
-          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
-              <h2 className="text-xl font-black text-slate-900 flex items-center gap-2"><span className="text-indigo-600">📷</span> Scan QR Code</h2>
-              <button onClick={() => setShowQRScanner(false)} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-slate-200 transition">✕</button>
-            </div>
-            <div className="p-8 flex flex-col items-center">
-              <div className="w-64 h-64 border-4 border-dashed border-slate-300 rounded-3xl relative overflow-hidden bg-slate-100 flex items-center justify-center mb-6 shadow-inner">
-                <style>{`@keyframes scan { 0%{top:-10%;opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{top:110%;opacity:0} }`}</style>
-                <div className="absolute w-full h-1 bg-indigo-500 shadow-[0_0_20px_rgba(99,102,241,0.8)]" style={{ animation: 'scan 2.5s ease-in-out infinite' }}></div>
-                <div className="absolute top-4 left-4 w-6 h-6 border-t-4 border-l-4 border-indigo-500 rounded-tl-lg"></div>
-                <div className="absolute top-4 right-4 w-6 h-6 border-t-4 border-r-4 border-indigo-500 rounded-tr-lg"></div>
-                <div className="absolute bottom-4 left-4 w-6 h-6 border-b-4 border-l-4 border-indigo-500 rounded-bl-lg"></div>
-                <div className="absolute bottom-4 right-4 w-6 h-6 border-b-4 border-r-4 border-indigo-500 rounded-br-lg"></div>
-              </div>
-              <h3 className="text-lg font-bold text-slate-900 mb-1">Align QR Code</h3>
-              <p className="text-slate-500 text-center font-medium text-sm">Hold the asset QR code within the frame.</p>
-            </div>
-            <div className="p-4 bg-slate-50 border-t border-slate-100">
-              <button onClick={() => setShowQRScanner(false)} className="w-full rounded-xl bg-slate-900 px-6 py-3 font-bold text-white hover:bg-slate-800 transition">Cancel</button>
+              <button onClick={() => setDeleteConfirm(null)} className="px-5 py-2.5 rounded-2xl font-bold text-slate-600 hover:bg-slate-100 text-xs">Cancel</button>
+              <button onClick={() => deleteAsset(deleteConfirm.id)} className="px-5 py-2.5 rounded-2xl font-bold bg-rose-600 text-white hover:bg-rose-700 text-xs shadow-md">Delete</button>
             </div>
           </div>
         </div>
@@ -348,69 +350,257 @@ const Inventory = () => {
 // ── Reusable Modal Wrapper ────────────────────────────────────────────
 const Modal = ({ onClose, title, children }) => (
   <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
-      <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
-        <h2 className="text-xl font-bold text-slate-900">{title}</h2>
-        <button onClick={onClose} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-slate-200 transition">✕</button>
+    <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden border border-emerald-100">
+      <div className="p-6 border-b border-emerald-50 flex justify-between items-center bg-emerald-50/40">
+        <h2 className="text-base font-bold text-slate-900">{title}</h2>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-emerald-100 transition">✕</button>
       </div>
       <div className="p-6">{children}</div>
     </div>
   </div>
 )
 
-// ── Asset Form (shared between Add and Edit) ──────────────────────────
-const AssetForm = ({ form, setForm, onSubmit, loading, onCancel }) => (
-  <form onSubmit={onSubmit} className="space-y-4">
-    <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1">Asset Name *</label>
-      <input required type="text" className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500"
-        value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Dell XPS 15" />
-    </div>
-    <div className="flex gap-4">
-      <div className="flex-1">
-        <label className="block text-sm font-medium text-slate-700 mb-1">Category *</label>
-        <select required className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 appearance-none"
-          value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
-          <option>Computer</option>
-          <option>Monitor</option>
-          <option>Phone</option>
-          <option>Network</option>
-          <option>Peripheral</option>
-          <option>Furniture</option>
-        </select>
-      </div>
-      <div className="flex-1">
-        <label className="block text-sm font-medium text-slate-700 mb-1">Status *</label>
-        <select required className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 appearance-none"
-          value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
-          <option value="available">Available</option>
-          <option value="loaned">On Loan</option>
-          <option value="maintenance">Maintenance</option>
-        </select>
-      </div>
-    </div>
-    <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1">Price (FCFA) *</label>
-      <input required type="number" min="0" className="w-full px-4 py-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500"
-        value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="e.g. 850000" />
-    </div>
-    <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-      <button type="button" onClick={onCancel} className="px-5 py-2 rounded-lg font-bold text-slate-500 hover:bg-slate-100 transition">Cancel</button>
-      <button type="submit" disabled={loading} className="px-5 py-2 rounded-lg font-bold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 transition">
-        {loading ? 'Saving...' : 'Save Asset'}
-      </button>
-    </div>
-  </form>
-)
+// Keywords for IT equipment
+const IT_KEYWORDS = [
+  'laptop', 'notebook', 'macbook', 'thinkpad', 'elitebook', 'latitude', 'inspiron', 'precision',
+  'xps', 'probook', 'zenbook', 'vivobook', 'rog', 'tuf', 'legion', 'predator', 'omen', 'surface',
+  'desktop', 'computer', 'pc', 'workstation', 'imac', 'mac mini', 'mac studio', 'mac pro',
+  'server', 'blade', 'poweredge', 'proliant', 'nas', 'synology', 'qnap', 'chromebook',
+  'monitor', 'screen', 'display', 'ultrasharp', 'curved', '4k', '1080p', 'oled', 'ips',
+  'projector', 'viewsonic', 'benq', 'aoc', 'lg display', 'samsung display',
+  'phone', 'smartphone', 'iphone', 'galaxy', 'pixel', 'android', 'tablet', 'ipad', 'tab',
+  'mobile', 'walkie', 'ios', 'oneplus', 'xiaomi', 'huawei', 'motorola',
+  'router', 'switch', 'modem', 'access point', 'wifi', 'wi-fi', 'ethernet', 'lan', 'wan',
+  'firewall', 'gateway', 'cisco', 'tp-link', 'tplink', 'netgear', 'ubiquiti', 'unifi',
+  'd-link', 'mikrotik', 'fortinet', 'juniper', 'patch panel', 'rj45', 'cat6', 'cat5', 'sfp',
+  'pdu', 'ups', 'battery backup', 'apc', 'cyberpower', 'rack', 'server rack',
+  'mouse', 'trackpad', 'touchpad', 'keyboard', 'keychron', 'logitech', 'corsair', 'razer',
+  'webcam', 'camera', 'cam', 'microphone', 'mic', 'headset', 'headphone', 'earphone', 'earbuds',
+  'airpods', 'jabra', 'poly', 'polycom', 'sennheiser', 'bose', 'speaker',
+  'dock', 'docking station', 'hub', 'dongle', 'adapter', 'charger', 'power supply', 'cable',
+  'hdmi', 'usb', 'type-c', 'usbc', 'thunderbolt', 'vga', 'displayport', 'power bank',
+  'printer', 'scanner', 'copier', 'laserjet', 'inkjet', 'epson', 'canon', 'brother',
+  'shredder', 'barcode', 'rfid', 'smart card', 'stylus',
+  'ram', 'memory', 'ddr4', 'ddr5', 'ssd', 'hdd', 'hard drive', 'hard disk', 'nvme', 'm.2',
+  'flash drive', 'thumb drive', 'pendrive', 'usb drive', 'storage', 'gpu', 'graphics card',
+  'geforce', 'rtx', 'gtx', 'radeon', 'nvidia', 'amd', 'intel', 'core i3', 'core i5', 'core i7', 'core i9',
+  'ryzen', 'xeon', 'motherboard', 'cpu', 'processor', 'cooling fan', 'heatsink', 'psu',
+  'office chair', 'ergonomic chair', 'desk', 'standing desk', 'workstation desk',
+  'apple', 'dell', 'hp', 'lenovo', 'asus', 'acer', 'microsoft', 'sony', 'samsung', 'lg',
+  'toshiba', 'panasonic', 'fujitsu', 'seagate', 'western digital', 'wd', 'kingston', 'sandisk',
+  'crucial', 'steelseries', 'hyperx', 'anker', 'belkin', 'ugreen'
+]
 
-// ── Alert Card ────────────────────────────────────────────────────────
-const AlertCard = ({ label, value, color, icon }) => {
-  const colors = { green: 'bg-emerald-50 text-emerald-700 border-emerald-200', blue: 'bg-blue-50 text-blue-700 border-blue-200', orange: 'bg-orange-50 text-orange-700 border-orange-200', slate: 'bg-slate-50 text-slate-700 border-slate-200', rose: 'bg-rose-50 text-rose-700 border-rose-200' }
+const NON_IT_BLACKLIST = [
+  'banana', 'orange', 'pizza', 'burger', 'sandwich', 'bread', 'rice', 'soup', 'chicken',
+  'meat', 'beef', 'pork', 'cookie', 'biscuit', 'cake', 'chocolate', 'candy', 'water',
+  'juice', 'soda', 'coke', 'beer', 'wine', 'alcohol', 'coffee', 'tea', 'milk', 'fruit',
+  'vegetable', 'potato', 'tomato', 'onion', 'garlic', 'carrot', 'pepper', 'egg', 'cheese',
+  'butter', 'sugar', 'salt', 'oil', 'meal', 'lunch', 'dinner', 'breakfast', 'snack', 'food',
+  'dog', 'puppy', 'cat', 'kitten', 'pet', 'bird', 'horse', 'cow', 'pig', 'sheep', 'goat',
+  'lion', 'tiger', 'snake', 'monkey', 'animal',
+  'shirt', 't-shirt', 'tshirt', 'pants', 'trousers', 'jeans', 'shorts', 'shoes', 'sneakers',
+  'boots', 'sandals', 'dress', 'skirt', 'jacket', 'coat', 'sweater', 'hoodie', 'hat', 'cap',
+  'socks', 'underwear', 'belt', 'scarf', 'gloves', 'glasses', 'sunglasses', 'ring', 'necklace',
+  'bracelet', 'earring', 'jewelry', 'perfume', 'cologne', 'makeup', 'lipstick', 'lotion', 'shampoo',
+  'soap', 'cosmetic', 'clothes', 'clothing',
+  'car', 'truck', 'van', 'bus', 'motorcycle', 'motorbike', 'bike', 'bicycle', 'scooter',
+  'plane', 'airplane', 'helicopter', 'boat', 'ship', 'yacht', 'train', 'vehicle',
+  'bed', 'mattress', 'pillow', 'blanket', 'sofa', 'couch', 'curtain', 'rug', 'carpet',
+  'pan', 'pot', 'knife', 'fork', 'spoon', 'plate', 'bowl', 'cup', 'glass', 'mug', 'bottle',
+  'refrigerator', 'fridge', 'microwave', 'oven', 'stove', 'blender', 'toaster', 'washing machine',
+  'dryer', 'vacuum', 'iron', 'broom', 'mop', 'bucket', 'trash can', 'toilet', 'shower',
+  'ball', 'football', 'basketball', 'soccer', 'tennis', 'baseball', 'golf', 'racket', 'guitar',
+  'piano', 'drum', 'toy', 'doll', 'lego',
+  'flower', 'tree', 'plant', 'grass', 'wood', 'stone', 'rock', 'sand', 'dirt', 'gold', 'silver',
+  'house', 'apartment', 'villa', 'building', 'land', 'gun', 'weapon', 'sword'
+]
+
+const getAssetValidationErrors = (form) => {
+  const errors = {}
+
+  if (!form.name || !form.name.trim()) {
+    errors.name = 'Asset name is required.'
+  } else {
+    const trimmed = form.name.trim()
+    const lower = trimmed.toLowerCase()
+
+    if (trimmed.length < 3) {
+      errors.name = 'Asset name is too short (minimum 3 characters).'
+    } else if (trimmed.length > 100) {
+      errors.name = 'Asset name cannot exceed 100 characters.'
+    } else if (/<[^>]*>|javascript:|alert\(|drop\s+table|union\s+select|--|;/i.test(trimmed)) {
+      errors.name = 'Invalid characters or malicious script code detected.'
+    } else if (!/[a-zA-Z]/.test(trimmed)) {
+      errors.name = 'Asset name must contain valid letters (e.g., "Dell Latitude", "MacBook Pro").'
+    } else if (/(\w)\1{4,}/i.test(trimmed)) {
+      errors.name = 'Please enter a realistic asset name (repetitive character spam detected).'
+    } else if (/^(asdf|qwerty|test|foo|bar|dummy|fake|lol|haha|xyz)+$/i.test(trimmed.replace(/\s+/g, ''))) {
+      errors.name = 'Please enter a genuine asset name instead of test keywords.'
+    } else {
+      const hasITKeyword = IT_KEYWORDS.some(k => lower.includes(k))
+      const matchedNonIT = NON_IT_BLACKLIST.find(bad => new RegExp(`\\b${bad}\\b`, 'i').test(lower))
+
+      if (matchedNonIT && !hasITKeyword) {
+        errors.name = `"${trimmed}" is not an IT asset! Inventory only accepts IT equipment.`
+      } else if (!hasITKeyword) {
+        errors.name = `"${trimmed}" is not recognized as an IT asset. Please enter valid IT equipment.`
+      }
+    }
+  }
+
+  if (form.price === '' || form.price === null || form.price === undefined) {
+    errors.price = 'Price is required.'
+  } else {
+    const num = Number(form.price)
+    if (isNaN(num) || num < 0) {
+      errors.price = 'Price must be a valid positive number (≥ 0 FCFA).'
+    } else if (num > 100000000) {
+      errors.price = 'Price is unrealistically high (max 100,000,000 FCFA).'
+    }
+  }
+
+  return errors
+}
+
+const AssetForm = ({ form, setForm, onSubmit, loading, onCancel }) => {
+  const [refusalError, setRefusalError] = useState('')
+  const [errorField, setErrorField] = useState('')
+
+  const handleChange = (field, value) => {
+    setForm(prev => ({ ...prev, [field]: value }))
+    if (refusalError) {
+      setRefusalError('')
+      setErrorField('')
+    }
+  }
+
+  const handleSaveClick = (e) => {
+    e.preventDefault()
+    
+    const errors = getAssetValidationErrors(form)
+    if (errors.name) {
+      setRefusalError(errors.name)
+      setErrorField('name')
+      return
+    }
+    if (errors.price) {
+      setRefusalError(errors.price)
+      setErrorField('price')
+      return
+    }
+
+    setRefusalError('')
+    setErrorField('')
+    onSubmit(e)
+  }
+
   return (
-    <div className={`rounded-2xl border p-5 shadow-sm ${colors[color]} flex flex-col relative`}>
-      {icon && <span className="absolute top-4 right-4 text-lg opacity-70">{icon}</span>}
-      <p className="mb-2 text-[11px] font-bold uppercase tracking-wider opacity-80">{label}</p>
-      <p className="text-4xl font-black tracking-tight">{value}</p>
+    <form onSubmit={handleSaveClick} className="space-y-4">
+      {refusalError && (
+        <div className="rounded-2xl bg-amber-50 border-2 border-amber-200 p-4 text-slate-800 text-xs font-semibold flex items-start gap-3 shadow-sm">
+          <div className="w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0 mt-0.5 text-[10px] font-bold">!</div>
+          <div className="flex-1">
+            <strong className="block text-slate-900 font-bold mb-0.5">Addition Refused:</strong>
+            <p className="text-slate-700 leading-relaxed">{refusalError}</p>
+          </div>
+        </div>
+      )}
+
+      <div>
+        <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">
+          Asset Name *
+        </label>
+        <input
+          required
+          type="text"
+          className={`w-full px-4 py-2.5 border rounded-2xl outline-none text-xs font-medium transition ${
+            errorField === 'name'
+              ? 'border-emerald-500 bg-emerald-50 text-slate-900 ring-2 ring-emerald-400'
+              : 'border-emerald-100 bg-emerald-50/30 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500/30'
+          }`}
+          value={form.name}
+          onChange={e => handleChange('name', e.target.value)}
+          placeholder="e.g. MacBook Pro 16 or Dell XPS 15"
+        />
+      </div>
+
+      <div className="flex gap-4">
+        <div className="flex-1">
+          <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">Category *</label>
+          <select
+            required
+            className="w-full px-4 py-2.5 border border-emerald-100 bg-emerald-50/30 text-slate-900 rounded-2xl outline-none text-xs font-medium focus:bg-white focus:ring-2 focus:ring-emerald-500/30"
+            value={form.category}
+            onChange={e => handleChange('category', e.target.value)}
+          >
+            <option>Computer</option>
+            <option>Monitor</option>
+            <option>Phone</option>
+            <option>Network</option>
+            <option>Peripheral</option>
+            <option>Furniture</option>
+          </select>
+        </div>
+        <div className="flex-1">
+          <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">Status *</label>
+          <select
+            required
+            className="w-full px-4 py-2.5 border border-emerald-100 bg-emerald-50/30 text-slate-900 rounded-2xl outline-none text-xs font-medium focus:bg-white focus:ring-2 focus:ring-emerald-500/30"
+            value={form.status}
+            onChange={e => handleChange('status', e.target.value)}
+          >
+            <option value="available">Available</option>
+            <option value="loaned">On Loan</option>
+            <option value="maintenance">Maintenance</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">
+          Price (FCFA) *
+        </label>
+        <input
+          required
+          type="number"
+          min="0"
+          className={`w-full px-4 py-2.5 border rounded-2xl outline-none text-xs font-medium transition ${
+            errorField === 'price'
+              ? 'border-emerald-500 bg-emerald-50 text-slate-900 ring-2 ring-emerald-400'
+              : 'border-emerald-100 bg-emerald-50/30 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500/30'
+          }`}
+          value={form.price}
+          onChange={e => handleChange('price', e.target.value)}
+          placeholder="e.g. 850000"
+        />
+      </div>
+
+      <div className="flex justify-end gap-3 pt-4 border-t border-emerald-50">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-5 py-2.5 rounded-2xl font-bold text-slate-500 hover:bg-slate-100 transition text-xs"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={loading}
+          className="px-6 py-2.5 rounded-2xl font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition text-xs shadow-md shadow-emerald-600/20 disabled:opacity-50"
+        >
+          {loading ? 'Saving...' : 'Save Asset'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+const AlertCard = ({ label, value }) => {
+  return (
+    <div className="rounded-3xl border border-emerald-100 bg-white/90 p-5 shadow-lg shadow-emerald-950/5 flex flex-col justify-center">
+      <p className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="text-3xl font-black tracking-tight text-slate-900">{value}</p>
     </div>
   )
 }

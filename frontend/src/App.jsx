@@ -10,6 +10,7 @@ import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 import Navbar from './components/Navbar'
 import Users from './pages/admin/Users'
+import UserProfile from './pages/admin/UserProfile'
 import SystemSettings from './pages/admin/SystemSettings'
 
 const PrivateRoute = ({ children, allowedRoles }) => {
@@ -52,6 +53,7 @@ function App() {
           
           {/* Admin Routes */}
           <Route path="/admin/users" element={<PrivateRoute allowedRoles={['Admin']}><Users /></PrivateRoute>} />
+          <Route path="/admin/users/:id" element={<PrivateRoute allowedRoles={['Admin']}><UserProfile /></PrivateRoute>} />
           <Route path="/admin/settings" element={<PrivateRoute allowedRoles={['Admin']}><SystemSettings /></PrivateRoute>} />
         </Routes>
       </Router>

@@ -11,6 +11,15 @@ router.get('/', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
+// GET single user by ID
+router.get('/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, name, email, phone, role, status, created_at FROM users WHERE id = ?', [req.params.id])
+    if (rows.length === 0) return res.status(404).json({ error: 'User not found' })
+    res.json(rows[0])
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 // PUT update profile (name, email, phone, optional password)
 router.put('/:id', async (req, res) => {
   try {
@@ -39,6 +48,12 @@ router.put('/:id', async (req, res) => {
 router.put('/:id/role', async (req, res) => {
   try {
     const { role } = req.body
+
+    // Enforce single IT Manager rule: if setting role to IT Manager, demote any existing IT Manager to Employee
+    if (role === 'IT Manager') {
+      await pool.query("UPDATE users SET role='Employee' WHERE role='IT Manager' AND id != ?", [req.params.id])
+    }
+
     await pool.query('UPDATE users SET role=? WHERE id=?', [role, req.params.id])
     res.json({ message: 'Role updated' })
   } catch (err) { res.status(500).json({ error: err.message }) }
