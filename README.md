@@ -29,7 +29,7 @@ Response returned to Frontend ({ reply: string, usage: { prompt_tokens, completi
 ```
 
 ### Key Security Features
-* **Zero Client-Side API Keys:** OpenRouter API key resides solely in `server/.env`.
+* **Zero Client-Side API Keys:** OpenRouter API key resides solely in `backend/.env`.
 * **JWT Protected:** `POST /api/ai/chat` requires a valid Bearer token.
 * **Rate Limiting:** Enforces `AI_RATE_LIMIT_PER_HOUR=20` per user ID.
 * **Role-Based Scope:** Prompt rules ensure admins see full data while regular users only access their own assets/loans.
