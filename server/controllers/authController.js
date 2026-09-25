@@ -1,10 +1,10 @@
-const { pool } = require('../config/db')
+const UserModel = require('../models/UserModel')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 
 // POST /api/auth/register
 const register = async (req, res) => {
-  const { first_name, last_name, email, password, phone, department, role } = req.body
+  const { first_name, last_name, email, password, phone, role } = req.body
 
   if (!first_name || !email || !password || !role) {
     return res.status(400).json({ error: 'Please provide first name, email, password and role.' })
@@ -12,33 +12,33 @@ const register = async (req, res) => {
 
   try {
     // Check if email already exists
-    const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email])
-    if (existing.length > 0) {
+    const existing = await UserModel.findByEmail(email)
+    if (existing) {
       return res.status(409).json({ error: 'An account with this email already exists.' })
     }
 
     // Hash the password
     const password_hash = await bcrypt.hash(password, 10)
-
     const name = [first_name, last_name].filter(Boolean).join(' ')
 
-    // The users table uses id, name, password, role and status columns.
-    // Department is collected by the form but is not part of that table.
     // Employee → Active immediately. IT Manager → Pending until Admin approves.
     const requestedRole = (role === 'IT Manager') ? 'IT Manager' : 'Employee'
-    const initialStatus  = (requestedRole === 'IT Manager') ? 'Pending' : 'Active'
+    const initialStatus = (requestedRole === 'IT Manager') ? 'Pending' : 'Active'
 
-    const [result] = await pool.query(
-      `INSERT INTO users (name, email, password, phone, role, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [name, email, password_hash, phone || null, requestedRole, initialStatus]
-    )
+    const userId = await UserModel.create({
+      name,
+      email,
+      password: password_hash,
+      phone: phone || null,
+      role: requestedRole,
+      status: initialStatus
+    })
 
     res.status(201).json({
       message: requestedRole === 'IT Manager'
         ? 'IT Manager account submitted. Awaiting Admin approval.'
         : 'Account created successfully! Please log in.',
-      userId: result.insertId
+      userId
     })
   } catch (err) {
     console.error('Register error:', err)
@@ -55,16 +55,10 @@ const login = async (req, res) => {
   }
 
   try {
-    const [rows] = await pool.query(
-      'SELECT id, name, email, password, phone, role, status FROM users WHERE email = ?',
-      [email]
-    )
-
-    if (rows.length === 0) {
+    const user = await UserModel.findByEmail(email)
+    if (!user) {
       return res.status(401).json({ error: 'Invalid email or password.' })
     }
-
-    const user = rows[0]
 
     if (String(user.status).toLowerCase() === 'pending') {
       return res.status(403).json({ error: 'Your IT Manager account is awaiting Admin approval. Please contact the System Admin.' })

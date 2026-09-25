@@ -1,41 +1,18 @@
 const express = require('express')
 const router = express.Router()
-const { pool } = require('../config/db')
+const categoryController = require('../controllers/categoryController')
+const auditController = require('../controllers/auditController')
 
-// GET categories
-router.get('/', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM categories ORDER BY name ASC')
-    res.json(rows)
-  } catch (err) { res.status(500).json({ error: err.message }) }
-})
+// GET /api/categories - list all categories
+router.get('/', categoryController.getCategories)
 
-// POST add category
-router.post('/', async (req, res) => {
-  try {
-    const { name } = req.body
-    const [result] = await pool.query('INSERT INTO categories (name) VALUES (?)', [name])
-    res.status(201).json({ id: result.insertId, message: 'Category added' })
-  } catch (err) { res.status(500).json({ error: err.message }) }
-})
+// POST /api/categories - create a new category
+router.post('/', categoryController.addCategory)
 
-// DELETE category
-router.delete('/:id', async (req, res) => {
-  try {
-    await pool.query('DELETE FROM categories WHERE id=?', [req.params.id])
-    res.json({ message: 'Category deleted' })
-  } catch (err) { res.status(500).json({ error: err.message }) }
-})
+// DELETE /api/categories/:id - remove a category
+router.delete('/:id', categoryController.deleteCategory)
 
-// GET audit logs
-router.get('/audit', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT l.*, u.name as user_name, u.role as user_role
-      FROM audit_logs l LEFT JOIN users u ON l.user_id=u.id
-      ORDER BY l.created_at DESC LIMIT 100`)
-    res.json(rows)
-  } catch (err) { res.status(500).json({ error: err.message }) }
-})
+// GET /api/categories/audit - audit logs endpoint
+router.get('/audit', auditController.getAuditLogs)
 
 module.exports = router

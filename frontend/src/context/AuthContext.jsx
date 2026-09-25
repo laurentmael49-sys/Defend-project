@@ -19,6 +19,12 @@ export const AuthProvider = ({ children }) => {
   }
 
   const logout = () => {
+    // Clear AI chat history keys from localStorage on logout
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('ai_chat_history_')) {
+        localStorage.removeItem(key)
+      }
+    })
     setUser(null)
     localStorage.removeItem('user')
     localStorage.removeItem('token')

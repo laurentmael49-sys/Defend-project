@@ -12,6 +12,7 @@ import Navbar from './components/Navbar'
 import Users from './pages/admin/Users'
 import UserProfile from './pages/admin/UserProfile'
 import SystemSettings from './pages/admin/SystemSettings'
+import AIChatWidget from './components/AIChatWidget'
 
 const PrivateRoute = ({ children, allowedRoles }) => {
   const { user, loading } = useAuth()
@@ -56,9 +57,11 @@ function App() {
           <Route path="/admin/users/:id" element={<PrivateRoute allowedRoles={['Admin']}><UserProfile /></PrivateRoute>} />
           <Route path="/admin/settings" element={<PrivateRoute allowedRoles={['Admin']}><SystemSettings /></PrivateRoute>} />
         </Routes>
+        <AIChatWidget />
       </Router>
     </AuthProvider>
   )
 }
+
 
 export default App

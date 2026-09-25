@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
+
+const API = 'http://localhost:5000/api'
 
 const getLoanStatus = (endDateStr) => {
   if (!endDateStr) return { status: 'ongoing', text: 'Ongoing (No due date)', badge: null, color: 'text-slate-500' }
@@ -20,12 +22,20 @@ const getLoanStatus = (endDateStr) => {
   }
 }
 
+const authHeaders = () => ({
+  'Content-Type': 'application/json',
+  'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
+})
+
 const Loans = () => {
   const { user } = useAuth()
+  const isAdminOrManager = user?.role === 'Admin' || user?.role === 'IT Manager'
+  const isEmployee = user?.role === 'Employee'
+
   const [activeTab, setActiveTab] = useState('active')
-  
   const [loans, setLoans] = useState([])
   const [requests, setRequests] = useState([])
+  const [pendingReturns, setPendingReturns] = useState([])
   const [loading, setLoading] = useState(true)
 
   const [showHandover, setShowHandover] = useState(null)
@@ -44,25 +54,45 @@ const Loans = () => {
   })
   const [formStep, setFormStep] = useState(1)
 
-  const fetchData = async () => {
+  // Return request modal state (employee) — tracks phase in diagram
+  const [showReturnRequestModal, setShowReturnRequestModal] = useState(null)
+  const [submittingReturn, setSubmittingReturn] = useState(false)
+  const [returnPhase1Result, setReturnPhase1Result] = useState(null) // null | 'ok' | error string
+
+  // Return inspection modal state (admin/IT manager)
+  const [showReturnModal, setShowReturnModal] = useState(null)
+  const [returnForm, setReturnForm] = useState({ condition: 'available', notes: '' })
+  const [inspectionConformityError, setInspectionConformityError] = useState(null) // INVALID state
+  const [inspectionResultState, setInspectionResultState] = useState(null) // null | 'ok' | error string
+  const [submittingInspection, setSubmittingInspection] = useState(false)
+
+  const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const [loansRes, reqRes] = await Promise.all([
-        fetch('http://localhost:5000/api/loans'),
-        fetch('http://localhost:5000/api/requests')
-      ])
-      if (loansRes.ok) setLoans(await loansRes.json())
-      if (reqRes.ok) setRequests(await reqRes.json())
+      const promises = [
+        fetch(`${API}/loans`),
+        fetch(`${API}/requests`)
+      ]
+      if (isAdminOrManager) {
+        promises.push(
+          fetch(`${API}/loans/pending-returns`, { headers: authHeaders() })
+        )
+      }
+
+      const results = await Promise.all(promises)
+      if (results[0].ok) setLoans(await results[0].json())
+      if (results[1].ok) setRequests(await results[1].json())
+      if (isAdminOrManager && results[2]?.ok) setPendingReturns(await results[2].json())
     } catch (e) {
       console.error(e)
     } finally {
       setLoading(false)
     }
-  }
+  }, [isAdminOrManager])
 
   useEffect(() => {
     fetchData()
-  }, [])
+  }, [fetchData])
 
   const openContractModal = async () => {
     setLoanForm({ asset_id: '', start_date: '', end_date: '', reason: '', signature: '' })
@@ -70,7 +100,7 @@ const Loans = () => {
     setShowContract(true)
     setAssetsLoading(true)
     try {
-      const res = await fetch('http://localhost:5000/api/assets')
+      const res = await fetch(`${API}/assets`)
       if (res.ok) {
         const data = await res.json()
         setAvailableAssets(data.filter(a => a.status === 'available'))
@@ -97,7 +127,7 @@ const Loans = () => {
     }
     setSubmitting(true)
     try {
-      const res = await fetch('http://localhost:5000/api/requests', {
+      const res = await fetch(`${API}/requests`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -124,35 +154,98 @@ const Loans = () => {
     }
   }
 
-  const processReturn = async (loan) => {
-    if (!window.confirm(`Mark ${loan.asset_name} as returned?`)) return
-    
+  // ── Employee: submit a return request (Phase 1 of diagram) ──────────────────
+  // Diagram: Send Return Signal Query → DBMS Execute → Process Result → Check Result
+  //   NOT OK → Display Error Message  |  OK → Display Pending Return Notification
+  const handleSubmitReturnRequest = async () => {
+    if (!showReturnRequestModal) return
+    setSubmittingReturn(true)
+    setReturnPhase1Result(null) // reset result state
     try {
-      const res = await fetch(`http://localhost:5000/api/loans/${loan.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ returned: true, asset_id: loan.asset_id })
+      const res = await fetch(`${API}/loans/${showReturnRequestModal.id}/request-return`, {
+        method: 'PATCH',
+        headers: authHeaders()
       })
+      const data = await res.json()
+
+      // Process Result + Check Result (diagram nodes)
       if (res.ok) {
-        alert('Return processed successfully.')
-        fetchData()
+        setReturnPhase1Result('ok') // → Display Pending Return Notification
+        fetchData() // refresh data so IT Manager badge updates
       } else {
-        alert('Failed to process return.')
+        setReturnPhase1Result(data.error || 'Failed to submit return request.') // NOT OK → Display Error
       }
     } catch (e) {
-      alert('Network error.')
+      setReturnPhase1Result('Network error. Please try again.') // NOT OK → Display Error
+    } finally {
+      setSubmittingReturn(false)
+    }
+  }
+
+  // ── Admin/IT Manager: approve a return after inspection (Phase 2 of diagram) ─
+  // Diagram: Check Conformity → VALID → Send Approval Query → DBMS → Process Result → Check Result
+  //   INVALID → Display Error (loop back to form)  |  NOT OK → Display Error  |  OK → Display Success
+  const openReturnModal = (loan) => {
+    setReturnForm({ condition: 'available', notes: '' })
+    setInspectionConformityError(null)
+    setInspectionResultState(null)
+    setShowReturnModal(loan)
+  }
+
+  const handleConfirmReturn = async () => {
+    if (!showReturnModal) return
+
+    // ── Check Conformity (diagram node) ─────────────────────────────────────
+    if (!returnForm.condition) {
+      setInspectionConformityError('Please select the inspected condition of the item.')
+      return
+    }
+    if (returnForm.condition === 'maintenance' && !returnForm.notes.trim()) {
+      setInspectionConformityError('Please describe the damage or reason for maintenance in the notes.')
+      return
+    }
+    // Conformity passed — clear any previous error
+    setInspectionConformityError(null)
+    setInspectionResultState(null)
+    setSubmittingInspection(true)
+
+    try {
+      // ── Send Approval Query (diagram node) → DBMS ──────────────────────
+      const res = await fetch(`${API}/loans/${showReturnModal.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          returned: true,
+          asset_id: showReturnModal.asset_id,
+          condition: returnForm.condition,
+          notes: returnForm.notes,
+          admin_user_id: user?.id
+        })
+      })
+
+      // ── Process Result + Check Result (diagram nodes) ──────────────────
+      if (res.ok) {
+        setInspectionResultState('ok') // → Display Success Message
+        fetchData()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        setInspectionResultState(err.error || 'Failed to process return. Please try again.') // NOT OK
+      }
+    } catch (e) {
+      setInspectionResultState('Network error. Please try again.') // NOT OK
+    } finally {
+      setSubmittingInspection(false)
     }
   }
 
   const approveRequest = async (req) => {
     try {
-      await fetch(`http://localhost:5000/api/requests/${req.id}`, {
+      await fetch(`${API}/requests/${req.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Approved' })
       })
-
-      await fetch('http://localhost:5000/api/loans', {
+      await fetch(`${API}/loans`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -163,7 +256,6 @@ const Loans = () => {
           reason: req.reason
         })
       })
-
       alert('Request approved and loan issued.')
       fetchData()
     } catch (e) {
@@ -174,7 +266,7 @@ const Loans = () => {
   const rejectRequest = async (reqId) => {
     if (!window.confirm('Are you sure you want to reject this request?')) return
     try {
-      await fetch(`http://localhost:5000/api/requests/${reqId}`, {
+      await fetch(`${API}/requests/${reqId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Rejected' })
@@ -185,17 +277,19 @@ const Loans = () => {
     }
   }
 
-  const activeLoans = loans.filter(l => !l.returned)
-  const historyLoans = loans.filter(l => l.returned)
+  // Filter loans based on role
+  const myLoans = isEmployee ? loans.filter(l => l.user_id === user?.id) : loans
+  const activeLoans = myLoans.filter(l => !l.returned)
+  const historyLoans = myLoans.filter(l => l.returned)
   const pendingRequests = requests.filter(r => r.status === 'Pending')
 
   const overdueCount = activeLoans.filter(l => {
-    if (!l.end_date) return false;
-    const end = new Date(l.end_date);
-    const today = new Date();
-    end.setHours(0,0,0,0); today.setHours(0,0,0,0);
-    return end < today;
-  }).length;
+    if (!l.end_date) return false
+    const end = new Date(l.end_date)
+    const today = new Date()
+    end.setHours(0,0,0,0); today.setHours(0,0,0,0)
+    return end < today
+  }).length
 
   return (
     <div className="min-h-screen bg-emerald-50/30 px-4 py-8 text-slate-800 sm:px-6 lg:px-8 font-sans">
@@ -212,13 +306,32 @@ const Loans = () => {
           </div>
         )}
 
+        {/* Pending Returns Alert (Admin/IT Manager) */}
+        {isAdminOrManager && pendingReturns.length > 0 && (
+          <div
+            className="mb-8 rounded-3xl bg-gradient-to-r from-violet-600 to-indigo-600 text-white p-5 flex items-center gap-4 shadow-xl shadow-violet-500/25 border border-violet-500 cursor-pointer hover:opacity-95 transition"
+            onClick={() => setActiveTab('pending-returns')}
+          >
+            <div className="bg-white/20 text-white w-10 h-10 rounded-2xl flex items-center justify-center text-xl font-bold shrink-0">📦</div>
+            <div className="flex-1">
+              <h3 className="font-bold text-sm">Pending Return Approvals</h3>
+              <p className="text-violet-200 text-xs font-medium mt-0.5">
+                {pendingReturns.length} {pendingReturns.length === 1 ? 'employee has' : 'employees have'} submitted a return — click to review and approve.
+              </p>
+            </div>
+            <div className="bg-white/20 text-white text-sm font-black rounded-full w-8 h-8 flex items-center justify-center shrink-0">
+              {pendingReturns.length}
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-3xl font-black text-slate-900 tracking-tight">Loans & Returns</h1>
             <p className="mt-1 text-sm font-medium text-slate-500">Track equipment requests, active loans, and completed returns.</p>
           </div>
-          {user?.role === 'Employee' && (
+          {isEmployee && (
             <button 
               onClick={openContractModal}
               className="rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-6 py-3 font-bold text-white transition hover:from-emerald-700 hover:to-teal-700 shadow-lg shadow-emerald-600/25 text-sm"
@@ -229,22 +342,35 @@ const Loans = () => {
         </div>
 
         {/* Tabs */}
-        <div className="mb-6 flex gap-2 border-b border-emerald-100 pb-3">
+        <div className="mb-6 flex flex-wrap gap-2 border-b border-emerald-100 pb-3">
           <button 
             onClick={() => setActiveTab('active')}
             className={`rounded-2xl px-5 py-2.5 font-bold transition text-xs ${activeTab === 'active' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'text-slate-500 hover:bg-emerald-50'}`}
           >
             Active Loans ({activeLoans.length})
           </button>
-          <button 
-            onClick={() => setActiveTab('requests')}
-            className={`rounded-2xl px-5 py-2.5 font-bold transition text-xs ${activeTab === 'requests' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'text-slate-500 hover:bg-emerald-50'} relative`}
-          >
-            Requests
-            {pendingRequests.length > 0 && (
-              <span className="absolute -top-1 -right-1 bg-amber-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full font-black">{pendingRequests.length}</span>
-            )}
-          </button>
+          {isAdminOrManager && (
+            <>
+              <button 
+                onClick={() => setActiveTab('requests')}
+                className={`rounded-2xl px-5 py-2.5 font-bold transition text-xs ${activeTab === 'requests' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'text-slate-500 hover:bg-emerald-50'} relative`}
+              >
+                Requests
+                {pendingRequests.length > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-amber-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full font-black">{pendingRequests.length}</span>
+                )}
+              </button>
+              <button 
+                onClick={() => setActiveTab('pending-returns')}
+                className={`rounded-2xl px-5 py-2.5 font-bold transition text-xs relative ${activeTab === 'pending-returns' ? 'bg-violet-600 text-white shadow-md shadow-violet-600/20' : 'text-slate-500 hover:bg-violet-50'}`}
+              >
+                Pending Returns
+                {pendingReturns.length > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-violet-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full font-black">{pendingReturns.length}</span>
+                )}
+              </button>
+            </>
+          )}
           <button 
             onClick={() => setActiveTab('history')}
             className={`rounded-2xl px-5 py-2.5 font-bold transition text-xs ${activeTab === 'history' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'text-slate-500 hover:bg-emerald-50'}`}
@@ -262,11 +388,15 @@ const Loans = () => {
             {(activeTab === 'active' || activeTab === 'history') && (
               <>
                 {(activeTab === 'active' ? activeLoans : historyLoans).map(loan => {
-                  const status = !loan.returned ? getLoanStatus(loan.end_date) : null;
+                  const status = !loan.returned ? getLoanStatus(loan.end_date) : null
+                  const returnPending = !loan.returned && loan.return_requested == 1
                   return (
-                    <div key={loan.id} className={`rounded-3xl border ${status?.status === 'overdue' ? 'border-rose-300' : 'border-emerald-100'} bg-white/90 p-6 shadow-lg shadow-emerald-950/5 transition hover:shadow-xl relative overflow-hidden`}>
-                      {status?.status === 'overdue' && (
+                    <div key={loan.id} className={`rounded-3xl border ${status?.status === 'overdue' ? 'border-rose-300' : returnPending ? 'border-violet-200 bg-violet-50/30' : 'border-emerald-100'} bg-white/90 p-6 shadow-lg shadow-emerald-950/5 transition hover:shadow-xl relative overflow-hidden`}>
+                      {status?.status === 'overdue' && !returnPending && (
                         <div className="absolute top-0 left-0 w-1.5 h-full bg-rose-600"></div>
+                      )}
+                      {returnPending && (
+                        <div className="absolute top-0 left-0 w-1.5 h-full bg-violet-500"></div>
                       )}
                       
                       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between pl-2">
@@ -275,31 +405,56 @@ const Loans = () => {
                             {loan.user_name?.split(' ').map(n => n[0]).join('').substring(0,2) || 'U'}
                           </div>
                           <div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 flex-wrap">
                               <h3 className="font-extrabold text-slate-900 text-base tracking-tight">{loan.asset_name}</h3>
                               {status?.badge && (
                                 <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase border ${status.badgeColor}`}>
                                   {status.badge}
                                 </span>
                               )}
+                              {returnPending && (
+                                <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase border bg-violet-100 text-violet-800 border-violet-200">
+                                  🔄 Return Pending Approval
+                                </span>
+                              )}
                             </div>
-                            <p className="text-xs text-slate-600 mt-0.5">Loaned to <strong className="text-slate-900 font-bold">{loan.user_name}</strong> — {loan.reason}</p>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              {isEmployee ? 'Your loan' : <>Loaned to <strong className="text-slate-900 font-bold">{loan.user_name}</strong></>} — {loan.reason}
+                            </p>
                           </div>
                         </div>
+                        
+                        {/* Action Buttons */}
                         {!loan.returned && (
-                          <div className="flex gap-2">
-                            <button 
-                              onClick={() => setShowHandover(loan)}
-                              className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100"
-                            >
-                              Handover
-                            </button>
-                            <button 
-                              onClick={() => processReturn(loan)}
-                              className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700 shadow-sm"
-                            >
-                              Process Return
-                            </button>
+                          <div className="flex gap-2 flex-wrap">
+                            {/* Employee: Submit Return OR Pending badge */}
+                            {isEmployee && !returnPending && (
+                              <button 
+                                onClick={() => setShowReturnRequestModal(loan)}
+                                className="rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-violet-700 shadow-sm"
+                              >
+                                📦 Return Item
+                              </button>
+                            )}
+                            {/* Admin/IT Manager: Process Return (direct) or Approve Return (from pending) */}
+                            {isAdminOrManager && (
+                              <>
+                                {!returnPending && (
+                                  <button 
+                                    onClick={() => setShowHandover(loan)}
+                                    className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100"
+                                  >
+                                    Handover
+                                  </button>
+                                )}
+                                <button 
+                                  onClick={() => openReturnModal(loan)}
+                                  className={`rounded-xl px-4 py-2 text-xs font-bold text-white transition shadow-sm ${returnPending ? 'bg-violet-600 hover:bg-violet-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                                >
+                                  {returnPending ? '✅ Approve Return' : 'Process Return'}
+                                </button>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
@@ -308,14 +463,19 @@ const Loans = () => {
                         <div className="bg-emerald-50/50 p-2 px-3.5 rounded-xl border border-emerald-100">
                           <span>From <strong className="text-slate-800">{new Date(loan.start_date).toLocaleDateString()}</strong>{loan.end_date ? ` to ` : ''}<strong className="text-slate-800">{loan.end_date ? new Date(loan.end_date).toLocaleDateString() : 'Indefinite'}</strong></span>
                         </div>
-                        {!loan.returned && loan.end_date && (
+                        {!loan.returned && loan.end_date && !returnPending && (
                           <div className="flex items-center gap-2">
                             <span className={`${status.color}`}>{status.text}</span>
                           </div>
                         )}
+                        {returnPending && loan.return_requested_at && (
+                          <div className="flex items-center gap-2 text-violet-600 font-bold">
+                            Submitted return: {new Date(loan.return_requested_at).toLocaleString()}
+                          </div>
+                        )}
                         {loan.returned && (
                           <div className="flex items-center gap-2 text-emerald-600 font-bold">
-                            Returned
+                            ✓ Returned
                           </div>
                         )}
                       </div>
@@ -325,6 +485,75 @@ const Loans = () => {
                 {(activeTab === 'active' ? activeLoans : historyLoans).length === 0 && (
                   <div className="text-center py-16 bg-white/90 rounded-3xl border border-emerald-100 border-dashed">
                     <p className="text-slate-400 text-xs font-semibold">No loans found in this category.</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* PENDING RETURNS (Admin/IT Manager) */}
+            {activeTab === 'pending-returns' && isAdminOrManager && (
+              <>
+                {pendingReturns.length > 0 ? (
+                  pendingReturns.map(loan => {
+                    const loanStatus = getLoanStatus(loan.end_date)
+                    return (
+                      <div key={loan.id} className="rounded-3xl border border-violet-200 bg-white/90 p-6 shadow-lg shadow-violet-950/5 transition hover:shadow-xl relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-1.5 h-full bg-violet-500"></div>
+                        
+                        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between pl-2">
+                          <div className="flex items-center gap-5">
+                            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-50 font-bold text-violet-800 border border-violet-100 text-sm">
+                              {loan.user_name?.split(' ').map(n => n[0]).join('').substring(0,2) || 'U'}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-3 flex-wrap">
+                                <h3 className="font-extrabold text-slate-900 text-base tracking-tight">{loan.asset_name}</h3>
+                                <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase border bg-violet-100 text-violet-800 border-violet-200">
+                                  Awaiting Inspection
+                                </span>
+                                {loanStatus.badge && (
+                                  <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase border ${loanStatus.badgeColor}`}>
+                                    {loanStatus.badge}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-600 mt-0.5">
+                                Returned by <strong className="text-slate-900 font-bold">{loan.user_name}</strong> — {loan.reason}
+                              </p>
+                              {loan.user_email && (
+                                <p className="text-[11px] text-slate-400 mt-0.5">{loan.user_email}</p>
+                              )}
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => openReturnModal(loan)}
+                            className="rounded-xl bg-violet-600 px-5 py-2 text-xs font-bold text-white transition hover:bg-violet-700 shadow-md shadow-violet-500/25 flex items-center gap-2"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Approve & Inspect
+                          </button>
+                        </div>
+                        
+                        <div className="mt-4 pl-2 flex flex-wrap items-center gap-4 text-xs text-slate-500 font-medium">
+                          <div className="bg-violet-50/50 p-2 px-3.5 rounded-xl border border-violet-100">
+                            <span>Loan period: <strong className="text-slate-800">{new Date(loan.start_date).toLocaleDateString()}</strong> → <strong className="text-slate-800">{loan.end_date ? new Date(loan.end_date).toLocaleDateString() : 'Indefinite'}</strong></span>
+                          </div>
+                          {loan.return_requested_at && (
+                            <div className="flex items-center gap-2 text-violet-600 font-bold">
+                              📦 Employee submitted: {new Date(loan.return_requested_at).toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="text-center py-20 bg-white/90 rounded-3xl border border-violet-100 border-dashed">
+                    <div className="text-4xl mb-3">✅</div>
+                    <p className="text-slate-800 text-sm font-bold">All clear!</p>
+                    <p className="text-slate-400 text-xs font-semibold mt-1">No pending returns to inspect right now.</p>
                   </div>
                 )}
               </>
@@ -348,7 +577,7 @@ const Loans = () => {
                           <p className="text-xs text-slate-600 mt-0.5">Requested by <strong className="text-slate-900 font-bold">{req.user_name}</strong> — {req.reason}</p>
                         </div>
                       </div>
-                      {user?.role !== 'Employee' && (
+                      {isAdminOrManager && (
                         <div className="flex gap-2">
                           <button 
                             onClick={() => rejectRequest(req.id)}
@@ -385,7 +614,97 @@ const Loans = () => {
         )}
       </div>
 
-      {/* Smart Handover Modal */}
+      {/* ── Employee: Return Item Modal (Phase 1) ──────────────────────────────── */}
+      {/* Diagram: Display Return Confirmation → Send Query → Check Result → Error OR Success Notification */}
+      {showReturnRequestModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl border border-violet-100">
+
+            {/* ── Phase 1 OK: Display Pending Return Notification (diagram node) ── */}
+            {returnPhase1Result === 'ok' ? (
+              <>
+                <div className="p-6 border-b border-violet-50 bg-violet-50/50 flex justify-between items-center">
+                  <h2 className="text-base font-bold text-slate-900">Return Submitted ✅</h2>
+                  <button onClick={() => { setShowReturnRequestModal(null); setReturnPhase1Result(null) }} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-violet-100 transition">✕</button>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div className="bg-violet-50 rounded-2xl border border-violet-100 p-5 text-center space-y-2">
+                    <div className="text-4xl">📦</div>
+                    <p className="text-sm font-bold text-slate-900">Pending Return Notification Sent</p>
+                    <p className="text-xs text-slate-500">The IT Manager has been notified and will inspect <strong>{showReturnRequestModal.asset_name}</strong> shortly.</p>
+                  </div>
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 text-xs text-emerald-800">
+                    <p className="font-bold mb-1">📋 What happens next?</p>
+                    <ul className="space-y-1 list-disc pl-4">
+                      <li>The IT Manager will inspect the returned item.</li>
+                      <li>Once approved, your loan will be closed in the system.</li>
+                      <li>The asset will be restored to available inventory.</li>
+                    </ul>
+                  </div>
+                </div>
+                <div className="p-4 bg-white border-t border-violet-50 flex justify-end">
+                  <button
+                    onClick={() => { setShowReturnRequestModal(null); setReturnPhase1Result(null) }}
+                    className="rounded-2xl bg-violet-600 px-6 py-2.5 font-bold text-white transition hover:bg-violet-700 shadow-md text-xs"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Phase 1: Display Return Confirmation (diagram node) ── */
+              <>
+                <div className="p-6 border-b border-violet-50 bg-violet-50/50 flex justify-between items-center">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900">Return Item</h2>
+                    <p className="text-xs text-slate-500 mt-0.5">Notify IT that you've physically handed back this item.</p>
+                  </div>
+                  <button onClick={() => setShowReturnRequestModal(null)} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-violet-100 transition">✕</button>
+                </div>
+
+                <div className="p-6 space-y-5">
+                  <div className="bg-violet-50 rounded-2xl border border-violet-100 p-4 space-y-1 text-xs text-slate-700">
+                    <p><strong className="font-bold text-slate-900">Item:</strong> {showReturnRequestModal.asset_name}</p>
+                    <p><strong className="font-bold text-slate-900">Due Date:</strong> {showReturnRequestModal.end_date ? new Date(showReturnRequestModal.end_date).toLocaleDateString() : 'Indefinite'}</p>
+                    <p><strong className="font-bold text-slate-900">Loan ID:</strong> #{showReturnRequestModal.id}</p>
+                  </div>
+
+                  {/* NOT OK → Display Error Message (diagram node) */}
+                  {returnPhase1Result && returnPhase1Result !== 'ok' && (
+                    <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 text-xs text-rose-800 font-medium">
+                      ❌ {returnPhase1Result}
+                    </div>
+                  )}
+
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-800">
+                    <p className="font-bold mb-1">⚠️ What happens next?</p>
+                    <ul className="space-y-1 list-disc pl-4">
+                      <li>An IT Manager will be notified to inspect the item.</li>
+                      <li>The loan remains active until they approve the return.</li>
+                      <li>Once approved, the item is marked as returned in the system.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-white border-t border-violet-50 flex justify-end gap-3">
+                  <button onClick={() => setShowReturnRequestModal(null)} className="rounded-2xl px-5 py-2.5 font-bold text-slate-500 hover:bg-slate-100 text-xs">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSubmitReturnRequest}
+                    disabled={submittingReturn}
+                    className="rounded-2xl bg-violet-600 px-6 py-2.5 font-bold text-white transition hover:bg-violet-700 shadow-md text-xs disabled:opacity-50"
+                  >
+                    {submittingReturn ? 'Sending...' : '📦 Confirm Return Item'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Smart Handover Modal ───────────────────────────────────────────────── */}
       {showHandover && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl relative border border-emerald-100">
@@ -400,8 +719,6 @@ const Loans = () => {
               <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-2">Transfer to Employee</label>
               <select className="w-full border border-emerald-100 rounded-2xl px-4 py-3 bg-emerald-50/30 font-medium mb-4 text-slate-800 text-xs outline-none">
                 <option>Select an employee...</option>
-                <option>Alice Williams</option>
-                <option>David Chen</option>
               </select>
             </div>
             <div className="p-4 bg-emerald-50/30 border-t border-emerald-50 flex justify-end gap-3">
@@ -412,7 +729,7 @@ const Loans = () => {
         </div>
       )}
 
-      {/* New Secure Loan Modal */}
+      {/* ── New Secure Loan Modal ─────────────────────────────────────────────── */}
       {showContract && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-3xl w-full max-w-2xl overflow-hidden shadow-2xl relative border border-emerald-100 flex flex-col max-h-[92vh]">
@@ -562,6 +879,134 @@ const Loans = () => {
               )}
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* ── Admin/IT Manager: Approve & Inspect Return Modal (Phase 2) ──────────── */}
+      {/* Diagram: Display Inspection Form → Check Conformity → Send Query → Check Result → Success/Error */}
+      {showReturnModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl relative border border-emerald-100 font-sans">
+
+            {/* ── Phase 2 OK: Display Success Message (diagram node) ── */}
+            {inspectionResultState === 'ok' ? (
+              <>
+                <div className="p-5 border-b border-emerald-50 flex justify-between items-center bg-emerald-50/50">
+                  <h2 className="text-base font-bold text-slate-900">Return Approved ✅</h2>
+                  <button onClick={() => { setShowReturnModal(null); setInspectionResultState(null) }} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-emerald-100 transition">✕</button>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div className="bg-emerald-50 rounded-2xl border border-emerald-100 p-5 text-center space-y-2">
+                    <div className="text-4xl">✅</div>
+                    <p className="text-sm font-bold text-slate-900">Return Inspected & Approved</p>
+                    <p className="text-xs text-slate-500">
+                      <strong>{showReturnModal.asset_name}</strong> has been returned by <strong>{showReturnModal.user_name}</strong>.
+                      Asset status updated to <strong>{returnForm.condition === 'maintenance' ? 'Maintenance' : 'Available'}</strong>.
+                    </p>
+                  </div>
+                </div>
+                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+                  <button
+                    onClick={() => { setShowReturnModal(null); setInspectionResultState(null) }}
+                    className="rounded-2xl bg-emerald-600 px-5 py-2.5 font-bold text-white transition hover:bg-emerald-700 shadow-md text-xs"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── Phase 2: Display Inspection Form (diagram node) ── */
+              <>
+                <div className="p-5 border-b border-emerald-50 flex justify-between items-center bg-emerald-50/50">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900">Approve &amp; Inspect Return</h2>
+                    <p className="text-xs text-slate-500">Confirm equipment inspection before restoring inventory status.</p>
+                  </div>
+                  <button onClick={() => setShowReturnModal(null)} className="text-slate-400 hover:text-slate-900 p-2 rounded-full hover:bg-emerald-100 transition">✕</button>
+                </div>
+
+                <div className="p-6 space-y-4">
+                  <div className="bg-emerald-50/70 text-slate-800 p-4 rounded-2xl border border-emerald-100 text-xs space-y-1">
+                    <p><strong>Item:</strong> {showReturnModal.asset_name}</p>
+                    <p><strong>Borrower:</strong> {showReturnModal.user_name}</p>
+                    <p><strong>Due Date:</strong> {showReturnModal.end_date ? new Date(showReturnModal.end_date).toLocaleDateString() : 'Indefinite'}</p>
+                    {showReturnModal.return_requested_at && (
+                      <p><strong>Return submitted:</strong> {new Date(showReturnModal.return_requested_at).toLocaleString()}</p>
+                    )}
+                  </div>
+
+                  {/* INVALID → Display Conformity Error (diagram node) */}
+                  {inspectionConformityError && (
+                    <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3 text-xs text-amber-800 font-semibold">
+                      ⚠️ {inspectionConformityError}
+                    </div>
+                  )}
+
+                  {/* NOT OK → Display Result Error (diagram node) */}
+                  {inspectionResultState && inspectionResultState !== 'ok' && (
+                    <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3 text-xs text-rose-800 font-semibold">
+                      ❌ {inspectionResultState}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-2">Inspected Condition *</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => { setReturnForm(f => ({ ...f, condition: 'available' })); setInspectionConformityError(null) }}
+                        className={`p-3 rounded-2xl border text-xs font-bold transition flex flex-col items-center gap-1 ${
+                          returnForm.condition === 'available'
+                            ? 'border-emerald-600 bg-emerald-50 text-emerald-800 shadow-sm'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-white'
+                        }`}
+                      >
+                        <span>🟢 Good Condition</span>
+                        <span className="text-[10px] font-normal text-slate-500">Restore as Available</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => { setReturnForm(f => ({ ...f, condition: 'maintenance' })); setInspectionConformityError(null) }}
+                        className={`p-3 rounded-2xl border text-xs font-bold transition flex flex-col items-center gap-1 ${
+                          returnForm.condition === 'maintenance'
+                            ? 'border-amber-500 bg-amber-50 text-amber-900 shadow-sm'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-white'
+                        }`}
+                      >
+                        <span>🛠️ Damaged / Repairs</span>
+                        <span className="text-[10px] font-normal text-slate-500">Set to Maintenance</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider mb-1.5">
+                      Inspection Notes {returnForm.condition === 'maintenance' ? '*' : '(Optional)'}
+                    </label>
+                    <textarea
+                      value={returnForm.notes}
+                      onChange={e => { setReturnForm(f => ({ ...f, notes: e.target.value })); setInspectionConformityError(null) }}
+                      placeholder={returnForm.condition === 'maintenance' ? 'Describe the damage or reason for maintenance...' : 'e.g. Returned on time, charger included...'}
+                      rows={2}
+                      className="w-full border border-slate-200 rounded-2xl px-4 py-2.5 bg-slate-50 text-xs font-medium text-slate-800 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/30 resize-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+                  <button onClick={() => setShowReturnModal(null)} className="rounded-2xl px-4 py-2 font-bold text-slate-500 hover:bg-slate-200/60 text-xs">Cancel</button>
+                  <button
+                    onClick={handleConfirmReturn}
+                    disabled={submittingInspection}
+                    className="rounded-2xl bg-emerald-600 px-5 py-2.5 font-bold text-white transition hover:bg-emerald-700 shadow-md text-xs disabled:opacity-50"
+                  >
+                    {submittingInspection ? 'Processing...' : 'Approve & Complete Return'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

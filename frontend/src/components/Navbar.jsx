@@ -7,19 +7,33 @@ const Navbar = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const [notifications, setNotifications] = useState([])
+  const [pendingReturnsCount, setPendingReturnsCount] = useState(0)
   const [showNotifications, setShowNotifications] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const notifRef = useRef(null)
   const profileRef = useRef(null)
 
+  const isAdminOrManager = user?.role === 'Admin' || user?.role === 'IT Manager'
+
   useEffect(() => {
-    if (user) {
-      fetch(`http://localhost:5000/api/notifications?user_id=${user.id}&role=${user.role}`)
-        .then(res => res.json())
-        .then(data => setNotifications(data || []))
-        .catch(err => console.error('Failed to load notifications', err))
+    if (!user) return
+
+    // Loan due-date / overdue notifications
+    fetch(`http://localhost:5000/api/notifications?user_id=${user.id}&role=${user.role}`)
+      .then(res => res.json())
+      .then(data => setNotifications(data || []))
+      .catch(err => console.error('Failed to load notifications', err))
+
+    // Pending return approvals (Admin / IT Manager only)
+    if (isAdminOrManager) {
+      fetch('http://localhost:5000/api/loans/pending-returns', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` }
+      })
+        .then(res => res.ok ? res.json() : [])
+        .then(data => setPendingReturnsCount(Array.isArray(data) ? data.length : 0))
+        .catch(() => {})
     }
-  }, [user])
+  }, [user, isAdminOrManager])
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -33,6 +47,22 @@ const Navbar = () => {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  const handleNotificationClick = async (notif) => {
+    setShowNotifications(false)
+    if (notif.id.startsWith('db_')) {
+      try {
+        await fetch(`http://localhost:5000/api/notifications/${notif.id}/read`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` }
+        })
+        // Remove from local state immediately
+        setNotifications(prev => prev.filter(n => n.id !== notif.id))
+      } catch (err) {
+        console.error('Failed to mark notification as read:', err)
+      }
+    }
+  }
 
   const roleLinks = {
     'Admin': ['dashboard', 'users', 'inventory', 'loans', 'reports'],
@@ -101,9 +131,9 @@ const Navbar = () => {
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
                   </svg>
-                  {notifications.length > 0 && (
+                  {(notifications.length + pendingReturnsCount) > 0 && (
                     <span className="absolute -top-1 -right-1 min-w-[18px] h-4 bg-emerald-600 rounded-full border-2 border-white text-[9px] font-extrabold text-white flex items-center justify-center px-1">
-                      {notifications.length}
+                      {notifications.length + pendingReturnsCount}
                     </span>
                   )}
                 </button>
@@ -112,21 +142,41 @@ const Navbar = () => {
                   <div className="absolute right-0 mt-3 w-80 bg-white rounded-2xl shadow-xl border border-emerald-100 overflow-hidden z-50">
                     <div className="px-4 py-3.5 border-b border-emerald-50 bg-emerald-50/50 flex justify-between items-center">
                       <h3 className="font-bold text-slate-900 text-sm">Notifications</h3>
-                      <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">{notifications.length}</span>
+                      <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">{notifications.length + pendingReturnsCount}</span>
                     </div>
-                    <div className="max-h-[300px] overflow-y-auto">
-                      {notifications.length === 0 ? (
+                    <div className="max-h-[360px] overflow-y-auto">
+                      {/* Pending Returns Alert (Admin/IT Manager) */}
+                      {isAdminOrManager && pendingReturnsCount > 0 && (
+                        <Link
+                          to="/loans"
+                          onClick={() => setShowNotifications(false)}
+                          className="p-4 hover:bg-violet-50/60 transition flex gap-3 block border-b border-violet-100 bg-violet-50/30"
+                        >
+                          <div className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-violet-100 text-violet-700">
+                            <span className="text-sm">📦</span>
+                          </div>
+                          <div>
+                            <p className="text-sm text-slate-800 font-bold leading-snug">
+                              {pendingReturnsCount} pending return{pendingReturnsCount > 1 ? 's' : ''} awaiting inspection
+                            </p>
+                            <p className="text-[10px] font-bold mt-1 uppercase tracking-wider text-violet-600">Action Required</p>
+                          </div>
+                        </Link>
+                      )}
+                      {notifications.length === 0 && pendingReturnsCount === 0 ? (
                         <div className="p-6 text-center text-slate-400 text-sm"><p>No new notifications</p></div>
                       ) : (
                         <div className="divide-y divide-emerald-50">
                           {notifications.map(notif => (
-                            <Link key={notif.id} to="/loans" onClick={() => setShowNotifications(false)} className="p-4 hover:bg-emerald-50/60 transition flex gap-3 block">
-                              <div className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-emerald-100 text-emerald-700">
+                            <Link key={notif.id} to="/loans" onClick={() => handleNotificationClick(notif)} className="p-4 hover:bg-emerald-50/60 transition flex gap-3 block">
+                              <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${notif.id.startsWith('db_') ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                               </div>
                               <div>
                                 <p className="text-sm text-slate-800 font-medium leading-snug">{notif.message}</p>
-                                <p className="text-[10px] font-bold mt-1 uppercase tracking-wider text-emerald-600">{notif.type.replace('_', ' ')}</p>
+                                <p className={`text-[10px] font-bold mt-1 uppercase tracking-wider ${notif.id.startsWith('db_') ? 'text-sky-600' : 'text-emerald-600'}`}>
+                                  {notif.type.replace('_', ' ')}
+                                </p>
                               </div>
                             </Link>
                           ))}
